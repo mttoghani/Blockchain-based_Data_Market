@@ -9,8 +9,10 @@ contract Health {
     mapping (address => bool) public doctor;
     mapping (address => bytes32) public patient;
     mapping (address => address) public cure_permission;
-    mapping (bytes32 => bytes32) public record;
     mapping (bytes32 => address) public record_owner;
+    mapping (bytes32 => bytes32) public record;
+    
+    // mapping (address => record) record_d_f;
     
     
     //***********************************************
@@ -19,7 +21,8 @@ contract Health {
     
     event Register_Doctor(address the_doctor);
     event Register_Patient(address the_patient, bytes32 new_hash);
-    event New_Record(address the_patient, bytes32 last_hash, bytes32 new_hash, address the_doctor);
+    event New_Record(address the_patient, bytes32 last_hash,
+                        bytes32 new_hash, address the_doctor);
     event Trade_Request(address smartcontract, address buyer);
     
     
@@ -63,7 +66,8 @@ contract Health {
         }
     }
     
-    function register_Patient(address new_patient, bytes32 info_hash) public is_admin() {
+    function register_Patient(address new_patient, bytes32 info_hash)
+                public is_admin() {
         require(patient[new_patient]==bytes32(0));
         patient[new_patient] = info_hash;
         emit Register_Patient(new_patient, info_hash);
@@ -74,7 +78,8 @@ contract Health {
         cure_permission[msg.sender] = a_doctor;
     }
     
-    function input_new_tx(address a_patient, bytes32 new_hash) public is_doctor() {
+    function input_new_tx(address a_patient, bytes32 new_hash)
+                public is_doctor() {
         require(cure_permission[a_patient]==msg.sender);
         cure_permission[a_patient] = address(0);
         emit New_Record(a_patient, patient[a_patient], new_hash, msg.sender);
@@ -92,7 +97,8 @@ contract Health {
     }
     
     
-    function valid_request(address seller, bytes32 data_hash) public view returns(bool){
+    function valid_request(address seller, bytes32 data_hash) 
+                public view returns(bool){
         return (record_owner[data_hash]==seller);
     }
     
@@ -110,6 +116,7 @@ contract Trade {
     //***********************************************
     //****************** variables ******************
     //***********************************************
+    enum State{A_Requisition, B_Confirmation, Key_Transmition, Dispution_Right, Dispution_Wrong, Done}
     
     struct Record{
         address owner;
@@ -118,7 +125,7 @@ contract Trade {
         uint seller_value;
         uint buyer_value;
         uint time;
-        uint8 state;
+        State state;
     }
     
     //***********************************************
@@ -185,15 +192,15 @@ contract Trade {
         require(records[data_hash].owner==address(0));
         records[data_hash] = Record({owner:msg.sender, enc_hash:enc_hash,
                                     key:bytes32(0), seller_value:msg.value,
-                                    buyer_value:uint(0), time:now, state:0});
+                                    buyer_value:uint(0), time:now, state:State.A_Requisition});
                                     
         emit New_Request(data_hash, enc_hash, msg.value);
     }
     
     function buyer_confirmation(bytes32 data_hash) payable public is_buyer is_valid{
         require(records[data_hash].owner!=address(0));
-        require(records[data_hash].state==0);
-        records[data_hash].state = 1;
+        require(records[data_hash].state==State.A_Requisition);
+        records[data_hash].state = State.B_Confirmation;
         records[data_hash].time = now;
         records[data_hash].buyer_value = msg.value;
         emit Buyer_Confirmation(data_hash, msg.value);
@@ -201,15 +208,15 @@ contract Trade {
     
     function send_key(bytes32 data_hash, bytes32 the_key) public is_valid{
         require(msg.sender==records[data_hash].owner);
-        require(records[data_hash].state==1);
-        records[data_hash].state = 2;
+        require(records[data_hash].state==State.B_Confirmation);
+        records[data_hash].state = State.Key_Transmition;
         records[data_hash].key=the_key;
         records[data_hash].time = now;
         emit Send_Key(data_hash, the_key);
     }
     
     function dispute(bytes32 data_hash, bytes32 IV, bytes enc_data, bytes32[] enc_hashes, bytes32[] data_hashes, uint order) public is_buyer is_valid{
-        require((records[data_hash].state==2) && (now < records[data_hash].time + 120 minutes));
+        require((records[data_hash].state==State.Key_Transmition) && (now < records[data_hash].time + 120 minutes));
         bytes32 goal = sha256(abi.encodePacked(IV, enc_data));
         uint temp = order;
         for (uint8 i = 0; i < enc_hashes.length; i++) {
@@ -237,27 +244,27 @@ contract Trade {
                 goal = sha256(decrypt(IV, enc_data, records[data_hash].key, "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"));
                 if(goal != data_hashes[0]){
                     buyer.transfer((records[data_hash].seller_value + records[data_hash].buyer_value));
-                    records[data_hash].state = 3;
+                    records[data_hash].state = State.Dispution_Right;
                     records[data_hash].seller_value = 0;
                     records[data_hash].buyer_value = 0;  
                 }
                 else{
                     records[data_hash].owner.transfer((records[data_hash].seller_value + records[data_hash].buyer_value));
-                    records[data_hash].state = 4;
+                    records[data_hash].state = State.Dispution_Wrong;
                     records[data_hash].seller_value = 0;
                     records[data_hash].buyer_value = 0;        
                 }
             }
             else{
             records[data_hash].owner.transfer((records[data_hash].seller_value + records[data_hash].buyer_value));
-            records[data_hash].state = 4;
+            records[data_hash].state = State.Dispution_Wrong;
             records[data_hash].seller_value = 0;
             records[data_hash].buyer_value = 0;
             }
         }
         else{
             records[data_hash].owner.transfer((records[data_hash].seller_value + records[data_hash].buyer_value));
-            records[data_hash].state = 4;
+            records[data_hash].state = State.Dispution_Wrong;
             records[data_hash].seller_value = 0;
             records[data_hash].buyer_value = 0;
         }
@@ -265,24 +272,24 @@ contract Trade {
     
     function claim_money(bytes32 data_hash) payable public is_valid{
         require(records[data_hash].owner!=address(0));
-        require(    ((records[data_hash].state==2) && (msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 120 minutes))
-                 || ((records[data_hash].state==1) && (msg.sender==buyer || msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 5 minutes ))
-                 || ((records[data_hash].state==0) && (msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 5 minutes))
+        require(    ((records[data_hash].state==State.Key_Transmition) && (msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 120 minutes))
+                 || ((records[data_hash].state==State.B_Confirmation) && (msg.sender==buyer || msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 5 minutes ))
+                 || ((records[data_hash].state==State.A_Requisition) && (msg.sender==records[data_hash].owner) && (now > records[data_hash].time + 5 minutes))
                 );
-        if(records[data_hash].state==2){
+        if(records[data_hash].state==State.Key_Transmition){
             records[data_hash].owner.transfer((records[data_hash].seller_value + records[data_hash].buyer_value));
-            records[data_hash].state = 5;
+            records[data_hash].state = State.Done;
             records[data_hash].seller_value = 0;
             records[data_hash].buyer_value = 0;
         }
-        else if(records[data_hash].state==1){
+        else if(records[data_hash].state==State.B_Confirmation){
             records[data_hash].owner.transfer(records[data_hash].seller_value);
             buyer.transfer(records[data_hash].buyer_value);
-            records[data_hash] = Record({owner:address(0), enc_hash:bytes32(0), key:bytes32(0), seller_value:uint(0), buyer_value:uint(0), time:uint(0), state:0});
+            records[data_hash] = Record({owner:address(0), enc_hash:bytes32(0), key:bytes32(0), seller_value:uint(0), buyer_value:uint(0), time:uint(0), state:State.A_Requisition});
         }
         else{
             records[data_hash].owner.transfer(records[data_hash].seller_value);
-            records[data_hash] = Record({owner:address(0), enc_hash:bytes32(0), key:bytes32(0), seller_value:uint(0), buyer_value:uint(0), time:uint(0), state:0});
+            records[data_hash] = Record({owner:address(0), enc_hash:bytes32(0), key:bytes32(0), seller_value:uint(0), buyer_value:uint(0), time:uint(0), state:State.A_Requisition});
         }
     }
     
