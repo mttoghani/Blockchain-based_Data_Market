@@ -12,8 +12,6 @@ contract Health {
     mapping (bytes32 => address) public record_owner;
     mapping (bytes32 => bytes32) public record;
     
-    // mapping (address => record) record_d_f;
-    
     
     //***********************************************
     //****************** events *********************
